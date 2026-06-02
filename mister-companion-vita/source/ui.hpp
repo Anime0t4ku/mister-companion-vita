@@ -32,6 +32,7 @@ public:
     void drawFooter(const std::string& text);
     void drawMessage(const std::string& message);
     void drawImageRgba(int x, int y, int w, int h, const unsigned char* rgba, int imageW, int imageH);
+    void drawPsSymbol(int x, int y, const char* symbol, u32 color, int scale = 2);
 
     static u32 rgb(u8 r, u8 g, u8 b);
 
@@ -43,5 +44,6 @@ private:
     int sw(int value) const;
     void putPixel(int x, int y, u32 color);
     void drawChar(int x, int y, char c, u32 color, int scale);
+    int drawUtf8SymbolIfAny(int x, int y, const std::string& text, size_t index, u32 color, int scale);
     const char* glyph(char c) const;
 };

@@ -147,16 +147,82 @@ void UiRenderer::drawChar(int x, int y, char c, u32 color, int scale) {
     }
 }
 
+
+void UiRenderer::drawPsSymbol(int x, int y, const char* symbol, u32 color, int scale) {
+    if (!symbol || !*symbol) return;
+
+    const int s = scale;
+    const char c0 = symbol[0];
+    const unsigned char u0 = static_cast<unsigned char>(symbol[0]);
+    const unsigned char u1 = static_cast<unsigned char>(symbol[1]);
+    const unsigned char u2 = static_cast<unsigned char>(symbol[2]);
+
+    auto dot = [&](int px, int py) {
+        fillRect(x + px * s, y + py * s, s, s, color);
+    };
+
+    const bool isTriangle = (u0 == 0xE2 && u1 == 0x96 && u2 == 0xB3) || c0 == '^';
+    const bool isCircle = (u0 == 0xE2 && u1 == 0x97 && u2 == 0x8B) || c0 == 'o' || c0 == 'O';
+    const bool isCross = (u0 == 0xC3 && u1 == 0x97) || c0 == 'x' || c0 == 'X';
+    const bool isSquare = (u0 == 0xE2 && u1 == 0x96 && u2 == 0xA1) || c0 == '#';
+
+    if (isTriangle) {
+        dot(3,0); dot(2,1); dot(4,1); dot(2,2); dot(4,2); dot(1,3); dot(5,3); dot(1,4); dot(5,4); dot(0,5); dot(6,5); dot(0,6); dot(1,6); dot(2,6); dot(3,6); dot(4,6); dot(5,6); dot(6,6);
+        return;
+    }
+    if (isCircle) {
+        dot(2,0); dot(3,0); dot(4,0); dot(1,1); dot(5,1); dot(0,2); dot(6,2); dot(0,3); dot(6,3); dot(0,4); dot(6,4); dot(1,5); dot(5,5); dot(2,6); dot(3,6); dot(4,6);
+        return;
+    }
+    if (isCross) {
+        dot(0,0); dot(6,0); dot(1,1); dot(5,1); dot(2,2); dot(4,2); dot(3,3); dot(2,4); dot(4,4); dot(1,5); dot(5,5); dot(0,6); dot(6,6);
+        return;
+    }
+    if (isSquare) {
+        for (int i = 0; i < 7; ++i) { dot(i,0); dot(i,6); dot(0,i); dot(6,i); }
+        return;
+    }
+}
+
+int UiRenderer::drawUtf8SymbolIfAny(int x, int y, const std::string& text, size_t index, u32 color, int scale) {
+    const unsigned char c0 = static_cast<unsigned char>(text[index]);
+    const unsigned char c1 = index + 1 < text.size() ? static_cast<unsigned char>(text[index + 1]) : 0;
+    const unsigned char c2 = index + 2 < text.size() ? static_cast<unsigned char>(text[index + 2]) : 0;
+
+    if (c0 == 0xC3 && c1 == 0x97) {
+        drawPsSymbol(x, y, "×", color, scale);
+        return 2;
+    }
+    if (c0 == 0xE2 && c1 == 0x96 && (c2 == 0xB3 || c2 == 0xA1)) {
+        drawPsSymbol(x, y, c2 == 0xB3 ? "△" : "□", color, scale);
+        return 3;
+    }
+    if (c0 == 0xE2 && c1 == 0x97 && c2 == 0x8B) {
+        drawPsSymbol(x, y, "○", color, scale);
+        return 3;
+    }
+    return 0;
+}
+
 void UiRenderer::drawText(int x, int y, const std::string& text, u32 color, int scale) {
     int cursor = x;
-    for (char c : text) {
+    for (size_t i = 0; i < text.size();) {
+        char c = text[i];
         if (c == '\n') {
             y += 9 * scale;
             cursor = x;
+            ++i;
+            continue;
+        }
+        int consumed = drawUtf8SymbolIfAny(cursor, y, text, i, color, scale);
+        if (consumed > 0) {
+            cursor += 9 * scale;
+            i += static_cast<size_t>(consumed);
             continue;
         }
         drawChar(cursor, y, c, color, scale);
         cursor += 6 * scale;
+        ++i;
     }
 }
 
@@ -226,7 +292,7 @@ void UiRenderer::drawImageRgba(int x, int y, int w, int h, const unsigned char* 
     // First-pass Vita renderer: draw the RGBA preview directly through scaled rectangles.
     // This keeps the NX preview code working without introducing texture lifetime issues.
     // It can be optimized later by caching vita2d textures.
-    const int step = std::max(1, drawW / 180);
+    const int step = std::max(2, drawW / 90);
     for (int yy = 0; yy < drawH; yy += step) {
         const int syy = std::min(imageH - 1, yy * imageH / drawH);
         for (int xx = 0; xx < drawW; xx += step) {
@@ -241,7 +307,10 @@ void UiRenderer::drawImageRgba(int x, int y, int w, int h, const unsigned char* 
 void UiRenderer::drawFooter(const std::string& text) {
     fillRect(0, Height - 54, Width, 54, rgb(20, 17, 31));
     drawRect(0, Height - 54, Width, 2, rgb(74, 58, 112), 2);
-    drawText(40, Height - 34, text, rgb(194, 184, 218), 2);
+
+    const int maxWidth = Width - 80;
+    const int scale = static_cast<int>(text.size()) * 12 > maxWidth ? 1 : 2;
+    drawText(40, Height - (scale == 1 ? 28 : 34), text, rgb(194, 184, 218), scale);
 }
 
 void UiRenderer::drawMessage(const std::string& message) {

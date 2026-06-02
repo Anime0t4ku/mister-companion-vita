@@ -2,6 +2,8 @@
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
 #include <psp2/sysmodule.h>
+#include <psp2/apputil.h>
+#include <psp2/common_dialog.h>
 #include <libssh2.h>
 #include <cstring>
 
@@ -28,6 +30,13 @@ static void vitaNetworkExit() {
 }
 
 int main(int argc, char* argv[]) {
+    SceAppUtilInitParam appUtilInit{};
+    SceAppUtilBootParam appUtilBoot{};
+    sceAppUtilInit(&appUtilInit, &appUtilBoot);
+
+    SceCommonDialogConfigParam commonDialogConfig{};
+    sceCommonDialogSetConfigParam(&commonDialogConfig);
+
     vitaNetworkInit();
     libssh2_init(0);
 
@@ -36,6 +45,7 @@ int main(int argc, char* argv[]) {
 
     libssh2_exit();
     vitaNetworkExit();
+    sceAppUtilShutdown();
 
     sceKernelExitProcess(0);
     return 0;

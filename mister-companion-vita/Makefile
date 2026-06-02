@@ -33,6 +33,7 @@ LIBS        += -lSceGxm_stub
 LIBS        += -lSceCtrl_stub
 LIBS        += -lSceTouch_stub
 LIBS        += -lSceCommonDialog_stub
+LIBS        += -lSceIme_stub
 LIBS        += -lSceSysmodule_stub
 LIBS        += -lSceNet_stub
 LIBS        += -lSceNetCtl_stub

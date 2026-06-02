@@ -2,6 +2,10 @@
 #include "wallpaper_db.hpp"
 
 #include <switch.h>
+#include <psp2/common_dialog.h>
+#include <psp2/ime_dialog.h>
+#include <psp2/sysmodule.h>
+#include <vita2d.h>
 #include <zlib.h>
 #include <jpeglib.h>
 #include <setjmp.h>
@@ -435,6 +439,51 @@ static bool statusYes(const std::vector<std::string>& lines, const std::string& 
 }
 
 
+
+static void utf8ToUtf16Limited(const std::string& in, std::vector<SceWChar16>& out, size_t maxChars) {
+    out.clear();
+    out.reserve(std::min(in.size(), maxChars) + 1);
+    for (size_t i = 0; i < in.size() && out.size() < maxChars;) {
+        unsigned char c = static_cast<unsigned char>(in[i]);
+        uint32_t cp = 0;
+        size_t advance = 1;
+        if (c < 0x80) {
+            cp = c;
+        } else if ((c & 0xE0) == 0xC0 && i + 1 < in.size()) {
+            cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(in[i + 1]) & 0x3F);
+            advance = 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < in.size()) {
+            cp = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(in[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(in[i + 2]) & 0x3F);
+            advance = 3;
+        } else {
+            cp = '?';
+        }
+        if (cp <= 0xFFFF) out.push_back(static_cast<SceWChar16>(cp));
+        else out.push_back(static_cast<SceWChar16>('?'));
+        i += advance;
+    }
+    out.push_back(0);
+}
+
+static std::string utf16ToUtf8(const SceWChar16* in) {
+    std::string out;
+    if (!in) return out;
+    for (size_t i = 0; in[i] != 0; ++i) {
+        uint32_t cp = static_cast<uint32_t>(in[i]);
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
 static std::string lowerCopyExtra(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return value;
@@ -591,8 +640,6 @@ void App::run() {
             continue;
         }
 
-        if ((down & HidNpadButton_Plus) && tab != Tab::Connection) break;
-
         handleInput(down);
         draw();
         performPendingExtraUpdateCheck();
@@ -642,20 +689,20 @@ void App::draw() {
     ui.drawMessage(lastMessage);
     if (tab == Tab::Connection) {
         if (ssh.isConnected()) {
-            ui.drawFooter("CROSS DISCONNECT    L/R TABS");
+            ui.drawFooter("× DISCONNECT    L/R TABS");
         } else {
-            ui.drawFooter(connectionProfileMode ? "UP/DOWN PROFILE    CROSS CONNECT    SQUARE EDIT    SELECT DELETE    LEFT/RIGHT MODE    L/R TABS" : "UP/DOWN SELECT    CROSS EDIT/CONNECT    START SAVE PROFILE    SELECT SCAN    LEFT/RIGHT MODE    L/R TABS");
+            ui.drawFooter(connectionProfileMode ? "UP/DN PROFILE    × CONNECT    □ EDIT    SEL DELETE    LEFT/RIGHT MODE    L/R TABS" : "UP/DN SELECT    × EDIT/CONNECT    START SAVE    SEL SCAN    LEFT/RIGHT MODE    L/R TABS");
         }
     } else if (tab == Tab::Scripts) {
-        ui.drawFooter("UP/DOWN SELECT    CROSS CONFIRM/EDIT    L/R TABS    LEFT/RIGHT SCRIPT    START EXIT");
+        ui.drawFooter("UP/DN SELECT    × CONFIRM/EDIT    LEFT/RIGHT SCRIPT    L/R TABS");
     } else if (tab == Tab::Settings) {
-        ui.drawFooter("UP/DOWN SELECT    CROSS CYCLE    SQUARE SAVE    CIRCLE CANCEL    L/R TABS    LEFT/RIGHT INI    START EXIT");
+        ui.drawFooter("UP/DN SELECT    × CYCLE    □ SAVE    ○ CANCEL    LEFT/RIGHT INI    L/R TABS");
     } else if (tab == Tab::Wallpapers) {
-        ui.drawFooter("UP/DOWN SELECT    CROSS CONFIRM    L/R TABS    LEFT/RIGHT SOURCE    SELECT STATIC WALLPAPER    START EXIT");
+        ui.drawFooter("UP/DN SELECT    × CONFIRM    LEFT/RIGHT SOURCE    SEL STATIC    L/R TABS");
     } else if (tab == Tab::Extras) {
-        ui.drawFooter("UP/DOWN SELECT    CROSS CONFIRM    L/R TABS    LEFT/RIGHT EXTRA    START EXIT");
+        ui.drawFooter("UP/DN SELECT    × CONFIRM    LEFT/RIGHT EXTRA    L/R TABS");
     } else {
-        ui.drawFooter("UP/DOWN SELECT    CROSS CONFIRM/EDIT    L/R SWITCH TAB    START EXIT");
+        ui.drawFooter("UP/DN SELECT    × CONFIRM/EDIT    L/R TABS");
     }
     ui.endFrame();
 }
@@ -691,7 +738,7 @@ void App::drawConnection() {
         ui.drawButton(696, 292, 508, 58, "USER  " + safeText(config.username), manualSelection == 1, false, connected);
         ui.drawButton(696, 364, 508, 58, config.password.empty() ? "PASSWORD  NOT SET" : "PASSWORD  ********", manualSelection == 2, false, connected);
         ui.drawButton(696, 436, 508, 58, connected ? "DISCONNECT" : "CONNECT", manualSelection == 3);
-        ui.drawText(696, 526, connected ? "CROSS DISCONNECT" : "START SAVE PROFILE    SELECT SCAN FOR MISTER", UiRenderer::rgb(218, 208, 238), 2);
+        ui.drawText(696, 526, connected ? "× DISCONNECT" : "START SAVE    SEL SCAN FOR MISTER", UiRenderer::rgb(218, 208, 238), 2);
         return;
     }
 
@@ -699,7 +746,7 @@ void App::drawConnection() {
     if (count <= 0) {
         ui.drawText(696, 280, "NO PROFILES SAVED", UiRenderer::rgb(248, 245, 255), 3);
         ui.drawText(696, 340, "SWITCH TO MANUAL MODE AND PRESS START", UiRenderer::rgb(218, 208, 238), 2);
-        ui.drawText(696, 526, "CROSS CONNECT    SQUARE EDIT    SELECT DELETE", UiRenderer::rgb(218, 208, 238), 2);
+        ui.drawText(696, 526, "× CONNECT    □ EDIT    SEL DELETE", UiRenderer::rgb(218, 208, 238), 2);
         return;
     }
 
@@ -721,7 +768,7 @@ void App::drawConnection() {
     if (count > visibleRows) {
         ui.drawText(696, 548, std::to_string(selectedProfile + 1) + " / " + std::to_string(count), UiRenderer::rgb(174, 154, 218), 2);
     }
-    ui.drawText(856, 548, "CROSS CONNECT    SQUARE EDIT    SELECT DELETE", UiRenderer::rgb(218, 208, 238), 2);
+    ui.drawText(856, 548, "× CONNECT    □ EDIT    SEL DELETE", UiRenderer::rgb(218, 208, 238), 2);
 }
 
 void App::drawDevice() {
@@ -893,7 +940,7 @@ void App::drawSettings() {
 
     if (!settingsLoaded) {
         ui.drawText(76, 252, "SETTINGS NOT LOADED", UiRenderer::rgb(232, 190, 120), 3);
-        ui.drawText(76, 310, "PRESS CROSS TO LOAD MISTER.INI SETTINGS.", UiRenderer::rgb(218, 208, 238), 2);
+        ui.drawText(76, 310, "PRESS × TO LOAD MISTER.INI SETTINGS.", UiRenderer::rgb(218, 208, 238), 2);
         ui.drawButton(76, 390, 460, 58, "LOAD SETTINGS", selectedSettings == 0, false, false);
         return;
     }
@@ -1377,6 +1424,39 @@ struct PreviewImage {
     std::string status;
 };
 
+
+static void shrinkPreviewImage(PreviewImage& image, int maxW = 320, int maxH = 180) {
+    if (image.rgba.empty() || image.width <= 0 || image.height <= 0) return;
+    if (image.width <= maxW && image.height <= maxH) return;
+
+    const float srcAspect = static_cast<float>(image.width) / static_cast<float>(image.height);
+    int newW = maxW;
+    int newH = static_cast<int>(newW / srcAspect);
+    if (newH > maxH) {
+        newH = maxH;
+        newW = static_cast<int>(newH * srcAspect);
+    }
+    newW = std::max(1, newW);
+    newH = std::max(1, newH);
+
+    std::vector<unsigned char> scaled(static_cast<size_t>(newW) * static_cast<size_t>(newH) * 4, 255);
+    for (int y = 0; y < newH; ++y) {
+        const int sy = std::min(image.height - 1, y * image.height / newH);
+        for (int x = 0; x < newW; ++x) {
+            const int sx = std::min(image.width - 1, x * image.width / newW);
+            const unsigned char* src = image.rgba.data() + (static_cast<size_t>(sy) * image.width + sx) * 4;
+            unsigned char* dst = scaled.data() + (static_cast<size_t>(y) * newW + x) * 4;
+            dst[0] = src[0];
+            dst[1] = src[1];
+            dst[2] = src[2];
+            dst[3] = src[3];
+        }
+    }
+    image.width = newW;
+    image.height = newH;
+    image.rgba.swap(scaled);
+}
+
 static unsigned int readBe32(const unsigned char* p) {
     return (static_cast<unsigned int>(p[0]) << 24) |
            (static_cast<unsigned int>(p[1]) << 16) |
@@ -1460,8 +1540,8 @@ static bool decodePngRgba(const std::vector<unsigned char>& png, PreviewImage& o
         pos += len + 4;
     }
 
-    if (width <= 0 || height <= 0 || width > 4096 || height > 4096) {
-        out.status = "Unsupported PNG size.";
+    if (width <= 0 || height <= 0 || width > 2048 || height > 2048 || static_cast<long long>(width) * static_cast<long long>(height) > 3000000LL) {
+        out.status = "Preview image is too large for Vita.";
         return false;
     }
     if ((bitDepth != 8 && bitDepth != 16) || interlace != 0) {
@@ -1557,6 +1637,7 @@ static bool decodePngRgba(const std::vector<unsigned char>& png, PreviewImage& o
         }
     }
 
+    shrinkPreviewImage(out);
     out.status = "Preview loaded.";
     return true;
 }
@@ -1607,10 +1688,10 @@ static bool decodeJpegRgba(const std::vector<unsigned char>& jpg, PreviewImage& 
     const int width = static_cast<int>(cinfo.output_width);
     const int height = static_cast<int>(cinfo.output_height);
     const int comps = static_cast<int>(cinfo.output_components);
-    if (width <= 0 || height <= 0 || width > 4096 || height > 4096 || comps < 3) {
+    if (width <= 0 || height <= 0 || width > 2048 || height > 2048 || static_cast<long long>(width) * static_cast<long long>(height) > 3000000LL || comps < 3) {
         jpeg_finish_decompress(&cinfo);
         jpeg_destroy_decompress(&cinfo);
-        out.status = "Unsupported JPEG size.";
+        out.status = "Preview image is too large for Vita.";
         return false;
     }
 
@@ -1635,6 +1716,7 @@ static bool decodeJpegRgba(const std::vector<unsigned char>& jpg, PreviewImage& 
 
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
+    shrinkPreviewImage(out);
     out.status = "Preview loaded.";
     return true;
 }
@@ -1688,7 +1770,9 @@ void App::showStaticWallpaperMenu() {
         const std::string encodedCommand =
             "LINE=" + std::to_string(remoteLine) + "; "
             "FOUND=$(find /media/fat/wallpapers -maxdepth 1 -type f \\( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' \\) 2>/dev/null | sort | sed -n \"$LINE\"p); "
-            "if [ -n \"$FOUND\" ] && [ -f \"$FOUND\" ]; then base64 \"$FOUND\"; "
+            "if [ -n \"$FOUND\" ] && [ -f \"$FOUND\" ]; then "
+            "SIZE=$(wc -c < \"$FOUND\" 2>/dev/null || echo 0); "
+            "if [ \"$SIZE\" -gt 4194304 ]; then echo __MC_VITA_PREVIEW_TOO_LARGE__; else base64 \"$FOUND\"; fi; "
             "else echo __MC_NX_PREVIEW_FILE_MISSING__; fi";
 
         SshResult encodedResult = ssh.runCommand(encodedCommand);
@@ -1699,6 +1783,18 @@ void App::showStaticWallpaperMenu() {
 
         if (encodedResult.output.find("__MC_NX_PREVIEW_FILE_MISSING__") != std::string::npos) {
             preview.status = "Preview file was not found on MiSTer.";
+            return;
+        }
+        if (encodedResult.output.find("__MC_VITA_PREVIEW_TOO_LARGE__") != std::string::npos) {
+            preview.status = "Preview is too large for Vita.";
+            return;
+        }
+        if (encodedResult.output.find("__MC_VITA_PREVIEW_TOO_LARGE__") != std::string::npos) {
+            preview.status = "Preview is too large for Vita.";
+            return;
+        }
+        if (encodedResult.output.find("__MC_VITA_PREVIEW_TOO_LARGE__") != std::string::npos) {
+            preview.status = "Preview is too large for Vita.";
             return;
         }
 
@@ -1773,7 +1869,7 @@ void App::showStaticWallpaperMenu() {
             ui.drawText(626, 240, "INSTALL WALLPAPERS FIRST.", UiRenderer::rgb(218, 208, 238), 2);
         }
 
-        ui.drawFooter("UP/DOWN SELECT    CROSS/SQUARE APPLY    TRIANGLE REMOVE STATIC    CIRCLE/SELECT BACK");
+        ui.drawFooter("UP/DN SELECT    ×/□ APPLY    △ REMOVE    ○/SEL BACK");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -1994,7 +2090,7 @@ void App::cycleSettingsValue(int index) {
             ui.beginFrame();
             ui.drawCard(220, 150, 840, 410, "SELECT FONT");
             ui.drawTextCentered(260, 320, 760, "RELEASE BUTTONS", UiRenderer::rgb(174, 154, 218), 2);
-            ui.drawFooter("UP/DOWN SELECT    CROSS SELECT    SQUARE SAVE & BACK    CIRCLE CANCEL");
+            ui.drawFooter("UP/DN SELECT    × SELECT    □ SAVE & BACK    ○ CANCEL");
             ui.endFrame();
         }
 
@@ -2032,7 +2128,7 @@ void App::cycleSettingsValue(int index) {
 
             std::string counter = std::to_string(pendingFont + 1) + " / " + std::to_string(options.size());
             ui.drawTextCentered(260, 566, 760, counter, UiRenderer::rgb(174, 154, 218), 2);
-            ui.drawFooter("UP/DOWN MOVE    CROSS SELECT    SQUARE SAVE & BACK    CIRCLE CANCEL");
+            ui.drawFooter("UP/DN MOVE    × SELECT    □ SAVE & BACK    ○ CANCEL");
             ui.endFrame();
 
             padUpdate(&pad);
@@ -2583,8 +2679,8 @@ void App::configureRaCores() {
             y += 56;
         }
         ui.drawTextCentered(76, 572, 1128, std::to_string(cursor + 1) + " / " + std::to_string(keys.size()), UiRenderer::rgb(174, 154, 218), 2);
-        ui.drawMessage(screenMessage.empty() ? "CROSS Edit/Toggle    SQUARE Save & Back    CIRCLE Cancel" : screenMessage);
-        ui.drawFooter("UP/DOWN SELECT    CROSS EDIT/TOGGLE    SQUARE SAVE    CIRCLE CANCEL");
+        ui.drawMessage(screenMessage.empty() ? "× Edit/Toggle    □ Save & Back    ○ Cancel" : screenMessage);
+        ui.drawFooter("UP/DN SELECT    × EDIT/TOGGLE    □ SAVE    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -2904,7 +3000,7 @@ void App::drawWallpapers() {
         actionY += 68;
     }
 
-    ui.drawText(696, 538, "PRESS - FOR STATIC WALLPAPER MENU", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(696, 538, "PRESS SELECT FOR STATIC WALLPAPER MENU", UiRenderer::rgb(174, 154, 218), 2);
 }
 
 void App::drawPassthrough() {
@@ -2916,12 +3012,12 @@ void App::drawPassthrough() {
     ui.drawText(42, 32, "REMOTE PASSTHROUGH ACTIVE", UiRenderer::rgb(248, 245, 255), 3);
     ui.drawStatusPill(UiRenderer::Width - 280, 28, remote.isConnected() ? "REMOTE READY" : "REMOTE LOST", remote.isConnected());
 
-    ui.drawCard(220, 180, 840, 340, "SWITCH CONTROLS ARE FORWARDED TO MISTER");
+    ui.drawCard(220, 180, 840, 340, "VITA CONTROLS ARE FORWARDED TO MISTER");
     ui.drawText(280, 285, "USE THE VITA PHYSICAL BUTTONS TO CONTROL MISTER", UiRenderer::rgb(248, 245, 255), 2);
     ui.drawText(280, 345, "HOLD SELECT AND PRESS L", UiRenderer::rgb(174, 154, 218), 2);
     ui.drawText(280, 390, "SELECT + L EXITS PASSTHROUGH MODE", UiRenderer::rgb(248, 245, 255), 3);
 
-    ui.drawFooter("PASSTHROUGH MODE    SELECT + L EXIT    RELEASE ALL ON EXIT");
+    ui.drawFooter("PASSTHROUGH    SEL+L EXIT    RELEASE ALL ON EXIT");
 }
 
 void App::handleInput(u64 buttons) {
@@ -3183,14 +3279,49 @@ void App::sendPassthroughButton(u64 mask, u64 buttons, const std::string& contro
 }
 
 void App::editText(const char* title, std::string& value, bool password) {
-    static const std::vector<std::string> rows = {
-        "0123456789",
-        "abcdefghijklmnopqrstuvwxyz",
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-        ".-_:/'@ ",
+    struct Key {
+        std::string label;
+        char value;
+        int width;
+    };
+
+    auto makeRow = [](const std::string& chars) {
+        std::vector<Key> row;
+        for (char c : chars) row.push_back({std::string(1, c), c, 54});
+        return row;
+    };
+
+    auto makeRows = [&](bool shifted) {
+        std::vector<std::vector<Key>> rows;
+        rows.push_back(makeRow("1234567890"));
+        rows.push_back(makeRow(shifted ? "QWERTYUIOP" : "qwertyuiop"));
+        rows.push_back(makeRow(shifted ? "ASDFGHJKL." : "asdfghjkl."));
+        rows.push_back(makeRow(shifted ? "ZXCVBNM-_" : "zxcvbnm-_"));
+        rows.push_back({
+            {"@", '@', 54},
+            {":" , ':', 54},
+            {"/", '/', 54},
+            {".", '.', 54},
+            {"SPACE", ' ', 190}
+        });
+        return rows;
+    };
+
+    auto rowWidth = [](const std::vector<Key>& row) {
+        int width = 0;
+        for (const Key& key : row) width += key.width + 8;
+        return row.empty() ? 0 : width - 8;
+    };
+
+    auto visibleText = [](const std::string& text, size_t maxChars) {
+        if (text.empty()) return std::string(" ");
+        if (text.size() <= maxChars) return text;
+        if (maxChars <= 3) return text.substr(text.size() - maxChars);
+        return "..." + text.substr(text.size() - (maxChars - 3));
     };
 
     std::string pending = value;
+    bool shifted = false;
     int row = 0;
     int col = 0;
     bool inputReleased = false;
@@ -3199,31 +3330,36 @@ void App::editText(const char* title, std::string& value, bool password) {
     padInitializeDefault(&pad);
 
     while (appletMainLoop()) {
+        std::vector<std::vector<Key>> rows = makeRows(shifted);
+        if (row < 0) row = 0;
+        if (row >= static_cast<int>(rows.size())) row = static_cast<int>(rows.size()) - 1;
+        if (col < 0) col = 0;
+        if (col >= static_cast<int>(rows[row].size())) col = static_cast<int>(rows[row].size()) - 1;
+
         ui.beginFrame();
         ui.clear(UiRenderer::rgb(12, 10, 20));
         ui.fillRect(0, 0, UiRenderer::Width, UiRenderer::Height, UiRenderer::rgb(12, 10, 20));
-        ui.drawCard(160, 100, 960, 500, title ? title : "Text Input");
+        ui.drawCard(80, 56, 1120, 592, title ? title : "TEXT INPUT");
 
-        std::string visible = password ? std::string(pending.size(), '*') : pending;
-        if (visible.empty()) visible = " ";
-        ui.drawText(210, 190, ellipsizeText(visible, 58), UiRenderer::rgb(248, 245, 255), 2);
-        ui.drawRect(200, 176, 880, 58, UiRenderer::rgb(74, 58, 112), 2);
+        ui.drawText(128, 124, password ? "PASSWORD FIELD" : "TEXT FIELD", UiRenderer::rgb(174, 154, 218), 2);
+        ui.drawText(128, 158, "CURRENT TEXT", UiRenderer::rgb(174, 154, 218), 2);
+        ui.drawRect(128, 188, 1024, 66, UiRenderer::rgb(74, 58, 112), 2);
+        ui.drawText(150, 213, visibleText(pending, 72), UiRenderer::rgb(248, 245, 255), 2);
+        ui.drawText(128, 274, shifted ? "CASE: UPPER" : "CASE: LOWER", UiRenderer::rgb(218, 208, 238), 2);
 
-        int y = 270;
+        int y = 306;
         for (int r = 0; r < static_cast<int>(rows.size()); ++r) {
-            int x = 210;
-            for (int c = 0; c < static_cast<int>(rows[r].size()); ++c) {
+            const auto& keys = rows[r];
+            int x = (UiRenderer::Width - rowWidth(keys)) / 2;
+            for (int c = 0; c < static_cast<int>(keys.size()); ++c) {
                 const bool active = r == row && c == col;
-                std::string label(1, rows[r][c]);
-                if (label == " ") label = "SPACE";
-                int width = label == "SPACE" ? 116 : 38;
-                ui.drawButton(x, y, width, 42, label, active);
-                x += width + 8;
+                ui.drawButton(x, y, keys[c].width, 40, keys[c].label, active);
+                x += keys[c].width + 8;
             }
-            y += 58;
+            y += 50;
         }
 
-        ui.drawFooter("DPAD SELECT    CROSS INSERT    SQUARE DELETE    TRIANGLE SAVE    CIRCLE CANCEL");
+        ui.drawFooter("DPAD MOVE    × TYPE    □ DEL    △ SAVE    ○ CANCEL    L/R CASE");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -3232,6 +3368,7 @@ void App::editText(const char* title, std::string& value, bool password) {
 
         if (!inputReleased) {
             const u64 block = HidNpadButton_A | HidNpadButton_B | HidNpadButton_X | HidNpadButton_Y |
+                              HidNpadButton_L | HidNpadButton_R |
                               HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right;
             if ((held & block) == 0) inputReleased = true;
             continue;
@@ -3241,9 +3378,11 @@ void App::editText(const char* title, std::string& value, bool password) {
         if (buttons & HidNpadButton_Down) row = (row + 1) % static_cast<int>(rows.size());
         if (buttons & HidNpadButton_Left) col = (col + static_cast<int>(rows[row].size()) - 1) % static_cast<int>(rows[row].size());
         if (buttons & HidNpadButton_Right) col = (col + 1) % static_cast<int>(rows[row].size());
+        if (buttons & (HidNpadButton_L | HidNpadButton_R)) shifted = !shifted;
+
         if (col >= static_cast<int>(rows[row].size())) col = static_cast<int>(rows[row].size()) - 1;
 
-        if ((buttons & HidNpadButton_A) && pending.size() < 255) pending.push_back(rows[row][col]);
+        if ((buttons & HidNpadButton_A) && pending.size() < 255) pending.push_back(rows[row][col].value);
         if ((buttons & HidNpadButton_X) && !pending.empty()) pending.pop_back();
         if (buttons & HidNpadButton_Y) {
             value = pending;
@@ -3269,7 +3408,7 @@ bool App::confirm(const char* title, const char* body) {
         ui.drawText(350, 280, body, UiRenderer::rgb(248, 245, 255), 2);
         ui.drawButton(350, 370, 260, 58, "YES", choice == 0, true);
         ui.drawButton(670, 370, 260, 58, "NO", choice == 1);
-        ui.drawFooter("LEFT/RIGHT SELECT    CROSS CONFIRM    CIRCLE CANCEL");
+        ui.drawFooter("LEFT/RIGHT SELECT    × CONFIRM    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -3373,7 +3512,7 @@ void App::editProfile(int index) {
     const std::string originalName = profile.name;
     const std::string originalHost = profile.host;
     int cursor = 0;
-    std::string screenMessage = "CROSS Edit    SQUARE Save & Back    CIRCLE Cancel";
+    std::string screenMessage = "× Edit    □ Save & Back    ○ Cancel";
 
     PadState pad;
     padInitializeDefault(&pad);
@@ -3396,7 +3535,7 @@ void App::editProfile(int index) {
         }
 
         ui.drawMessage(screenMessage);
-        ui.drawFooter("UP/DOWN SELECT    CROSS EDIT    SQUARE SAVE    CIRCLE CANCEL");
+        ui.drawFooter("UP/DN SELECT    × EDIT    □ SAVE    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -3412,7 +3551,7 @@ void App::editProfile(int index) {
             else if (cursor == 1) editText("MiSTer IP or hostname", profile.host);
             else if (cursor == 2) editText("SSH username", profile.username);
             else if (cursor == 3) editText("SSH password", profile.password, true);
-            screenMessage = "CROSS Edit    SQUARE Save & Back    CIRCLE Cancel";
+            screenMessage = "× Edit    □ Save & Back    ○ Cancel";
             while (appletMainLoop()) {
                 padUpdate(&pad);
                 if ((padGetButtons(&pad) & (HidNpadButton_A | HidNpadButton_B | HidNpadButton_X | HidNpadButton_Up | HidNpadButton_Down)) == 0) break;
@@ -3522,7 +3661,7 @@ void App::showMisterScanWindow() {
         ui.drawText(260, 170, line, UiRenderer::rgb(248, 245, 255), 2);
         if (!completed) {
             ui.drawText(260, 220, "PROGRESS  " + std::to_string(progress) + " / 254", UiRenderer::rgb(174, 154, 218), 2);
-            ui.drawFooter("SCANNING...    CIRCLE CANCEL");
+            ui.drawFooter("SCANNING...    ○ CANCEL");
         } else {
             if (foundHosts.empty()) {
                 ui.drawText(260, 250, "NO MISTER DEVICES FOUND", UiRenderer::rgb(248, 245, 255), 3);
@@ -3538,7 +3677,7 @@ void App::showMisterScanWindow() {
                     ui.drawButton(260, 260 + row * 62, 760, 54, foundHosts[index], selectedHost == index);
                 }
             }
-            ui.drawFooter("UP/DOWN SELECT    CROSS CONNECT    SQUARE SAVE & CONNECT    CIRCLE BACK");
+            ui.drawFooter("UP/DN SELECT    × CONNECT    □ SAVE & CONNECT    ○ BACK");
         }
         ui.endFrame();
     };
@@ -3755,7 +3894,7 @@ void App::waitForReconnectAfterReboot(const std::string& title, const std::strin
             ui.drawText(300, 326, "Attempt: " + std::to_string(attempt), UiRenderer::rgb(174, 154, 218), 2);
         }
         ui.drawText(300, 382, "MiSTer Companion Vita will reconnect automatically.", UiRenderer::rgb(218, 208, 238), 2);
-        ui.drawFooter(canCancel ? "B STOP WAITING" : "PLEASE WAIT");
+        ui.drawFooter(canCancel ? "○ STOP WAITING" : "PLEASE WAIT");
         ui.endFrame();
     };
 
@@ -4167,7 +4306,7 @@ void App::showOutputWindow(const std::string& title, const std::string& output) 
             y += 34;
         }
 
-        ui.drawFooter("UP/DOWN SCROLL    A/B CLOSE    + CLOSE");
+        ui.drawFooter("UP/DN SCROLL    ×/○ CLOSE    START CLOSE");
         ui.endFrame();
     }
 }
@@ -4219,7 +4358,7 @@ bool App::showStreamingCommandWindow(const std::string& title, const std::string
             y += 34;
         }
 
-        ui.drawFooter(completed ? "UP/DOWN SCROLL    CIRCLE CLOSE    CROSS CLOSE" : "UP/DOWN SCROLL    PLEASE WAIT");
+        ui.drawFooter(completed ? "UP/DN SCROLL    ○ CLOSE    × CLOSE" : "UP/DOWN SCROLL    PLEASE WAIT");
         ui.endFrame();
     };
 
@@ -4250,7 +4389,7 @@ bool App::showStreamingCommandWindow(const std::string& title, const std::string
     appendText(success ? successMessage : failureMessage);
     if (!finalError.empty()) appendText(finalError);
     appendText("");
-    appendText("Press CIRCLE to close.");
+    appendText("Press ○ to close.");
     completed = true;
     drawStreamingWindow();
 
@@ -4598,7 +4737,7 @@ void App::configureUpdateAll() {
             }
 
             ui.drawText(76, 638, std::to_string(manualSelected + 1) + " / " + std::to_string(manualsSources.size()), UiRenderer::rgb(174, 154, 218), 2);
-            ui.drawFooter("CROSS TOGGLE    SQUARE SAVE & BACK    CIRCLE CANCEL");
+            ui.drawFooter("× TOGGLE    □ SAVE & BACK    ○ CANCEL");
             ui.endFrame();
         };
 
@@ -4688,7 +4827,7 @@ void App::configureUpdateAll() {
         }
 
         ui.drawText(76, 638, std::to_string(configSelected + 1) + " / " + std::to_string(items.size()), UiRenderer::rgb(174, 154, 218), 2);
-        ui.drawFooter("CROSS TOGGLE/CYCLE/OPEN    SQUARE SAVE & BACK    CIRCLE CANCEL");
+        ui.drawFooter("× TOGGLE/CYCLE/OPEN    □ SAVE & BACK    ○ CANCEL");
         ui.endFrame();
     };
 
@@ -4955,7 +5094,7 @@ void App::configureCifsMount() {
         if (!screenMessage.empty()) {
             ui.drawMessage(screenMessage);
         }
-        ui.drawFooter("CROSS EDIT / TOGGLE / TEST    SQUARE SAVE & BACK    CIRCLE CANCEL");
+        ui.drawFooter("× EDIT/TOGGLE/TEST    □ SAVE & BACK    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -5125,7 +5264,7 @@ void App::configureDavBrowser() {
         ui.drawButton(420, 442, 700, 46, boolText(skipTls), field == 4, false, false);
 
         if (!screenMessage.empty()) ui.drawMessage(screenMessage);
-        ui.drawFooter("CROSS EDIT / TOGGLE    SQUARE SAVE & BACK    CIRCLE CANCEL");
+        ui.drawFooter("× EDIT/TOGGLE    □ SAVE & BACK    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -5269,7 +5408,7 @@ void App::configureFtpSaveSync() {
             ui.drawText(buttonX, 610, "Warning: savestates may cause issues with some cores or games.", UiRenderer::rgb(255, 200, 104), 1);
         }
         if (!screenMessage.empty()) ui.drawMessage(screenMessage);
-        ui.drawFooter("CROSS EDIT / TOGGLE    SQUARE SAVE & BACK    CIRCLE CANCEL");
+        ui.drawFooter("× EDIT/TOGGLE    □ SAVE & BACK    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
@@ -5401,7 +5540,7 @@ void App::configureRaViewer() {
         ui.drawButton(420, 296, 700, 46, maskedApiKey(), field == 1, false, false);
 
         if (!screenMessage.empty()) ui.drawMessage(screenMessage);
-        ui.drawFooter("CROSS EDIT    SQUARE SAVE & BACK    CIRCLE CANCEL");
+        ui.drawFooter("× EDIT    □ SAVE & BACK    ○ CANCEL");
         ui.endFrame();
 
         padUpdate(&pad);
