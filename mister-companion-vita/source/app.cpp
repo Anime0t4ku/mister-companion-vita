@@ -2,9 +2,6 @@
 #include "wallpaper_db.hpp"
 
 #include <switch.h>
-#include <psp2/common_dialog.h>
-#include <psp2/ime_dialog.h>
-#include <psp2/sysmodule.h>
 #include <vita2d.h>
 #include <zlib.h>
 #include <jpeglib.h>
@@ -436,52 +433,6 @@ static std::string statusValue(const std::vector<std::string>& lines, const std:
 
 static bool statusYes(const std::vector<std::string>& lines, const std::string& key) {
     return statusValue(lines, key) == "YES";
-}
-
-
-
-static void utf8ToUtf16Limited(const std::string& in, std::vector<SceWChar16>& out, size_t maxChars) {
-    out.clear();
-    out.reserve(std::min(in.size(), maxChars) + 1);
-    for (size_t i = 0; i < in.size() && out.size() < maxChars;) {
-        unsigned char c = static_cast<unsigned char>(in[i]);
-        uint32_t cp = 0;
-        size_t advance = 1;
-        if (c < 0x80) {
-            cp = c;
-        } else if ((c & 0xE0) == 0xC0 && i + 1 < in.size()) {
-            cp = ((c & 0x1F) << 6) | (static_cast<unsigned char>(in[i + 1]) & 0x3F);
-            advance = 2;
-        } else if ((c & 0xF0) == 0xE0 && i + 2 < in.size()) {
-            cp = ((c & 0x0F) << 12) | ((static_cast<unsigned char>(in[i + 1]) & 0x3F) << 6) | (static_cast<unsigned char>(in[i + 2]) & 0x3F);
-            advance = 3;
-        } else {
-            cp = '?';
-        }
-        if (cp <= 0xFFFF) out.push_back(static_cast<SceWChar16>(cp));
-        else out.push_back(static_cast<SceWChar16>('?'));
-        i += advance;
-    }
-    out.push_back(0);
-}
-
-static std::string utf16ToUtf8(const SceWChar16* in) {
-    std::string out;
-    if (!in) return out;
-    for (size_t i = 0; in[i] != 0; ++i) {
-        uint32_t cp = static_cast<uint32_t>(in[i]);
-        if (cp < 0x80) {
-            out.push_back(static_cast<char>(cp));
-        } else if (cp < 0x800) {
-            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        } else {
-            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-        }
-    }
-    return out;
 }
 
 static std::string lowerCopyExtra(std::string value) {
