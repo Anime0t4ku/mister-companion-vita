@@ -1,0 +1,37 @@
+# Build output
+build/
+*.elf
+*.velf
+*.vpk
+eboot.bin
+param.sfo
+
+# Object/dependency files
+*.o
+*.d
+*.a
+
+# Generated binary headers from data files
+*_bin.h
+
+# Local config / runtime files
+config.txt
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+
+# JetBrains
+.idea/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
