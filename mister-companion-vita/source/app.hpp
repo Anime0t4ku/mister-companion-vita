@@ -43,6 +43,7 @@ private:
     enum class ExtraId {
         ZaparooFrontend,
         RetroAchievementCores,
+        Mms2GbCore,
     };
 
     AppConfig config;
@@ -77,8 +78,8 @@ private:
     int wallpaperMissingTotal = 0;
     int selectedExtra = 0;
     std::vector<std::vector<std::string>> cachedExtraStatus;
-    bool extraUpdateAvailable[2] = {false, false};
-    std::string extraLatestVersion[2];
+    bool extraUpdateAvailable[3] = {false, false, false};
+    std::string extraLatestVersion[3];
     bool extraUpdateCheckPending = false;
     int extraUpdateCheckIndex = -1;
     std::vector<std::string> settingsIniFiles;
@@ -188,6 +189,8 @@ private:
     void installOrUpdateRaCores(bool updateOnly = false);
     void uninstallRaCores();
     void configureRaCores();
+    void installOrUpdateMms2GbCore();
+    void uninstallMms2GbCore();
 
     void loadSettingsTab(bool force = false);
     bool ensureRemoteMisterIni();
