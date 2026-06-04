@@ -2129,11 +2129,18 @@ static bool extraStatusInstalled(const std::vector<std::string>& lines) {
     return statusValue(lines, "INSTALLED") == "YES";
 }
 
+static bool extraStatusFilesMissing(const std::vector<std::string>& lines) {
+    std::string installed = statusValue(lines, "INSTALLED");
+    std::string status = statusValue(lines, "STATUS");
+    return installed == "FILES MISSING" || status == "FILES MISSING";
+}
+
 std::vector<std::string> App::extraActions(ExtraId id) const {
     std::vector<std::string> statusLines = selectedExtra >= 0 && selectedExtra < static_cast<int>(cachedExtraStatus.size())
         ? cachedExtraStatus[selectedExtra]
         : std::vector<std::string>{};
     const bool installed = extraStatusInstalled(statusLines);
+    const bool filesMissing = extraStatusFilesMissing(statusLines);
     const bool updateAvailable = extraUpdateAvailable[static_cast<int>(id)];
 
     std::vector<std::string> actions;
@@ -2142,6 +2149,10 @@ std::vector<std::string> App::extraActions(ExtraId id) const {
     }
     if (!installed) {
         actions.push_back("INSTALL");
+        if (id == ExtraId::RetroAchievementCores && filesMissing) {
+            actions.push_back("CONFIGURE");
+            actions.push_back("UNINSTALL");
+        }
         return actions;
     }
 
@@ -2185,10 +2196,42 @@ echo VERSION: $VERSION
         return splitLines(runCommandMessage(command));
     }
 
-    const std::string command =
-        "INSTALLED=NO; "
-        "if [ -f /media/fat/MiSTer_RA ] && [ -f /media/fat/achievement.wav ] && [ -f /media/fat/retroachievements.cfg ] && [ -d /media/fat/_RA_Cores/Cores ] && [ -d /media/fat/_RA_Cores ] && grep -q '^main=MiSTer_RA' /media/fat/MiSTer.ini 2>/dev/null; then INSTALLED=YES; fi; "
-        "echo INSTALLED: $INSTALLED";
+    std::string command;
+    command += R"SH(
+TMP=/tmp/mc_ra_status_$$
+rm -rf "$TMP"
+mkdir -p "$TMP"
+cat > "$TMP/sources.txt" <<'MCRASOURCES'
+)SH";
+    command += raSourcesHeredoc();
+    command += R"SH(MCRASOURCES
+FOUND=0
+MISSING=0
+check_path() {
+    if [ -e "$1" ]; then FOUND=1; else MISSING=1; fi
+}
+check_path /media/fat/MiSTer_RA
+check_path /media/fat/achievement.wav
+check_path /media/fat/retroachievements.cfg
+check_path /media/fat/_RA_Cores
+check_path /media/fat/_RA_Cores/Cores
+if grep -q '^main=MiSTer_RA' /media/fat/MiSTer.ini 2>/dev/null; then FOUND=1; else MISSING=1; fi
+while IFS='|' read -r key title repo kind; do
+    [ -z "$key" ] && continue
+    [ "$key" = "main" ] && continue
+    check_path "/media/fat/_RA_Cores/Cores/$title.rbf"
+    check_path "/media/fat/_RA_Cores/$title.mgl"
+done < "$TMP/sources.txt"
+if [ "$FOUND" = "1" ] && [ "$MISSING" = "0" ]; then
+    INSTALLED=YES
+elif [ "$FOUND" = "1" ] && [ "$MISSING" = "1" ]; then
+    INSTALLED="FILES MISSING"
+else
+    INSTALLED=NO
+fi
+rm -rf "$TMP"
+echo INSTALLED: $INSTALLED
+)SH";
     return splitLines(runCommandMessage(command));
 }
 

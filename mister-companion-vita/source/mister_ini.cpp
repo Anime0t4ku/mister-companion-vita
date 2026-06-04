@@ -10,6 +10,7 @@ namespace {
 const char* DefaultFontLine = ";font=font/myfont.pf";
 const char* AmigaVisionPresetKey = "__amigavision_preset";
 const char* MenuCrtPresetKey = "__menu_crt_preset";
+const char* CustomResolutionLabel = "Custom Resolution";
 
 const std::vector<std::pair<std::string, std::string>> ResolutionMap = {
     {"0", "1280x720@60"}, {"1", "1024x768@60"}, {"2", "720x480@60"}, {"3", "720x576@50"},
@@ -317,7 +318,7 @@ void appendMenuCrtPresetBlock(std::vector<std::string>& newLines, const std::map
 std::map<std::string, std::string> buildEasyModeSettings(const MisterIniEasyValues& values) {
     std::map<std::string, std::string> settings;
     settings["direct_video"] = values.hdmiMode == "Direct Video (CRT / Scaler)" ? "1" : "0";
-    settings["video_mode"] = keyForValue(ResolutionMap, values.resolution, "8");
+    if (values.resolution != CustomResolutionLabel) settings["video_mode"] = keyForValue(ResolutionMap, values.resolution, "8");
     settings["vsync_adjust"] = keyForValue(ScalingMap, values.scaling, "1");
     settings["dvi_mode"] = values.hdmiAudio == "Enabled" ? "0" : "1";
     settings["hdr"] = values.hdr == "Enabled" ? "1" : "0";
@@ -351,7 +352,11 @@ std::map<std::string, std::string> buildEasyModeSettings(const MisterIniEasyValu
 
 namespace MisterIni {
 
-std::vector<std::string> resolutionOptions() { std::vector<std::string> out; for (const auto& item : ResolutionMap) out.push_back(item.second); return out; }
+std::vector<std::string> resolutionOptions() {
+    std::vector<std::string> out{CustomResolutionLabel};
+    for (const auto& item : ResolutionMap) out.push_back(item.second);
+    return out;
+}
 std::vector<std::string> scalingOptions() { return {"Disabled", "Low Latency", "Exact Refresh"}; }
 std::vector<std::string> hdmiModeOptions() { return {"HD Output (Default)", "Direct Video (CRT / Scaler)"}; }
 std::vector<std::string> hdmiAudioOptions() { return {"Enabled", "Disabled (DVI Mode)"}; }
@@ -409,7 +414,13 @@ MisterIniEasyValues easyValuesFromIniText(const std::string& text) {
     std::map<std::string, std::string> settings = parseMisterIni(text);
     MisterIniEasyValues values;
     values.hdmiMode = (settings["direct_video"] == "1" || settings["direct_video"] == "2") ? "Direct Video (CRT / Scaler)" : "HD Output (Default)";
-    values.resolution = valueForKey(ResolutionMap, settings["video_mode"], "1920x1080@60");
+    auto videoModeIt = settings.find("video_mode");
+    if (videoModeIt != settings.end() && !videoModeIt->second.empty()) {
+        std::string mappedResolution = valueForKey(ResolutionMap, videoModeIt->second, "");
+        values.resolution = mappedResolution.empty() ? CustomResolutionLabel : mappedResolution;
+    } else {
+        values.resolution = "1920x1080@60";
+    }
     values.scaling = valueForKey(ScalingMap, settings["vsync_adjust"].empty() ? "1" : settings["vsync_adjust"], "Low Latency");
     values.hdmiAudio = settings["dvi_mode"] == "1" ? "Disabled (DVI Mode)" : "Enabled";
     values.hdr = settings["hdr"] == "1" ? "Enabled" : "Disabled";
