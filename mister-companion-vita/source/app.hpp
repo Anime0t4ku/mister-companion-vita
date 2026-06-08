@@ -185,6 +185,7 @@ private:
     void performPendingExtraUpdateCheck();
     void executeExtraAction(ExtraId id, int actionIndex);
     void installOrUpdateZaparooFrontend();
+    void enableZaparooFrontend();
     void uninstallZaparooFrontend();
     void installOrUpdateRaCores(bool updateOnly = false);
     void uninstallRaCores();

@@ -3,9 +3,11 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstring>
+#include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 #include <libssh2.h>
@@ -13,6 +15,69 @@
 
 static std::string lastSocketError() {
     return std::string(strerror(errno));
+}
+
+
+static bool connectSocketWithTimeout(int fd, const sockaddr* addr, socklen_t addrLen, int timeoutMs, std::string& error) {
+    int originalFlags = fcntl(fd, F_GETFL, 0);
+    if (originalFlags < 0) {
+        error = "Unable to read socket flags: " + lastSocketError();
+        return false;
+    }
+
+    if (fcntl(fd, F_SETFL, originalFlags | O_NONBLOCK) != 0) {
+        error = "Unable to set socket timeout mode: " + lastSocketError();
+        return false;
+    }
+
+    int rc = ::connect(fd, addr, addrLen);
+    if (rc == 0) {
+        fcntl(fd, F_SETFL, originalFlags);
+        return true;
+    }
+
+    if (errno != EINPROGRESS && errno != EWOULDBLOCK) {
+        error = lastSocketError();
+        fcntl(fd, F_SETFL, originalFlags);
+        return false;
+    }
+
+    fd_set writeSet;
+    FD_ZERO(&writeSet);
+    FD_SET(fd, &writeSet);
+
+    timeval timeout{};
+    timeout.tv_sec = timeoutMs / 1000;
+    timeout.tv_usec = (timeoutMs % 1000) * 1000;
+
+    rc = select(fd + 1, nullptr, &writeSet, nullptr, &timeout);
+    if (rc == 0) {
+        error = "Timed out.";
+        fcntl(fd, F_SETFL, originalFlags);
+        return false;
+    }
+    if (rc < 0) {
+        error = lastSocketError();
+        fcntl(fd, F_SETFL, originalFlags);
+        return false;
+    }
+
+    int socketError = 0;
+    socklen_t socketErrorLen = sizeof(socketError);
+    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &socketErrorLen) != 0) {
+        error = lastSocketError();
+        fcntl(fd, F_SETFL, originalFlags);
+        return false;
+    }
+
+    if (socketError != 0) {
+        error = std::string(strerror(socketError));
+        fcntl(fd, F_SETFL, originalFlags);
+        return false;
+    }
+
+    fcntl(fd, F_SETFL, originalFlags);
+    return true;
 }
 
 SshClient::SshClient() = default;
@@ -64,14 +129,22 @@ bool SshClient::connect(const AppConfig& config, std::string& message) {
         return false;
     }
 
-    if (::connect(socketFd, result->ai_addr, result->ai_addrlen) != 0) {
+    std::string socketError;
+    if (!connectSocketWithTimeout(socketFd, result->ai_addr, static_cast<socklen_t>(result->ai_addrlen), 5000, socketError)) {
         freeaddrinfo(result);
-        message = "Unable to connect to SSH port 22: " + lastSocketError();
+        message = "Cannot connect to MiSTer at " + config.host + " on SSH port 22";
+        if (!socketError.empty()) message += ": " + socketError;
         disconnect();
         return false;
     }
 
     freeaddrinfo(result);
+
+    timeval ioTimeout{};
+    ioTimeout.tv_sec = 10;
+    ioTimeout.tv_usec = 0;
+    setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &ioTimeout, sizeof(ioTimeout));
+    setsockopt(socketFd, SOL_SOCKET, SO_SNDTIMEO, &ioTimeout, sizeof(ioTimeout));
 
     LIBSSH2_SESSION* sshSession = libssh2_session_init();
     if (!sshSession) {

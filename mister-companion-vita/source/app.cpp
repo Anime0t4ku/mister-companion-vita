@@ -435,6 +435,90 @@ static bool statusYes(const std::vector<std::string>& lines, const std::string& 
     return statusValue(lines, key) == "YES";
 }
 
+
+static bool misterIniHasZaparooFrontendEntry(const std::string& text) {
+    for (const std::string& rawLine : splitLines(text)) {
+        if (trim(rawLine) == "main=zaparoo/MiSTer_Zaparoo") return true;
+    }
+    return false;
+}
+
+static std::string removeZaparooFrontendFromMisterIniText(const std::string& text) {
+    std::vector<std::string> out;
+    for (const std::string& rawLine : splitLines(text)) {
+        const std::string line = trim(rawLine);
+        if (line == "main=zaparoo/MiSTer_Zaparoo") continue;
+        if (line == "alt_launcher=zaparoo/launcher") continue;
+        out.push_back(rawLine);
+    }
+    return joinLines(normalizeIniLines(out));
+}
+
+static std::string patchMisterIniForZaparooFrontend(const std::string& text) {
+    std::vector<std::string> lines = splitLines(removeZaparooFrontendFromMisterIniText(text));
+    while (!lines.empty() && trim(lines.back()).empty()) lines.pop_back();
+
+    int misterStart = -1;
+    for (int i = 0; i < static_cast<int>(lines.size()); i++) {
+        const std::string stripped = trim(lines[i]);
+        if (stripped.size() >= 2 && stripped.front() == '[' && stripped.back() == ']') {
+            if (stripped == "[MiSTer]") {
+                misterStart = i;
+                break;
+            }
+        }
+    }
+
+    if (misterStart < 0) {
+        std::vector<std::string> out = {"[MiSTer]", "", "main=zaparoo/MiSTer_Zaparoo"};
+        if (!lines.empty()) {
+            out.push_back("");
+            out.insert(out.end(), lines.begin(), lines.end());
+        }
+        return joinLines(out);
+    }
+
+    int insertAt = static_cast<int>(lines.size());
+    for (int i = misterStart + 1; i < static_cast<int>(lines.size()); i++) {
+        const std::string stripped = trim(lines[i]);
+        if (stripped.size() >= 2 && stripped.front() == '[' && stripped.back() == ']') {
+            insertAt = i;
+            break;
+        }
+    }
+
+    std::vector<std::string> insertLines;
+    if (insertAt > 0 && !trim(lines[insertAt - 1]).empty()) insertLines.push_back("");
+    insertLines.push_back("main=zaparoo/MiSTer_Zaparoo");
+    lines.insert(lines.begin() + insertAt, insertLines.begin(), insertLines.end());
+    return joinLines(lines);
+}
+
+static std::string zaparooFrontendEnableShell() {
+    return R"SH(
+set -u
+TMP=/tmp/mc_zaparoo_enable
+mkdir -p "$TMP"
+if [ ! -f /media/fat/MiSTer.ini ]; then
+    wget --no-check-certificate -O /media/fat/MiSTer.ini https://raw.githubusercontent.com/Anime0t4ku/mister-companion/main/assets/MiSTer_example.ini || true
+fi
+if [ ! -f /media/fat/MiSTer.ini ]; then
+    printf '[MiSTer]\n\nmain=zaparoo/MiSTer_Zaparoo\n' > /media/fat/MiSTer.ini
+else
+    grep -v '^main=zaparoo/MiSTer_Zaparoo$' /media/fat/MiSTer.ini | grep -v '^alt_launcher=zaparoo/launcher$' > "$TMP/MiSTer.clean" || true
+    if grep -q '^\[MiSTer\]' "$TMP/MiSTer.clean" 2>/dev/null; then
+        awk 'BEGIN{in_mister=0; inserted=0} /^\[MiSTer\]/{in_mister=1; print; next} /^\[/{if(in_mister && !inserted){print ""; print "main=zaparoo/MiSTer_Zaparoo"; inserted=1; in_mister=0} print; next} {print} END{if(in_mister && !inserted){print ""; print "main=zaparoo/MiSTer_Zaparoo"} else if(!inserted && !in_mister){}}' "$TMP/MiSTer.clean" > "$TMP/MiSTer.ini" && mv "$TMP/MiSTer.ini" /media/fat/MiSTer.ini
+    else
+        printf '[MiSTer]\n\nmain=zaparoo/MiSTer_Zaparoo\n\n' | cat - "$TMP/MiSTer.clean" > "$TMP/MiSTer.ini" && mv "$TMP/MiSTer.ini" /media/fat/MiSTer.ini
+    fi
+fi
+rm -rf "$TMP"
+sync
+echo Zaparoo Frontend enabled.
+echo A MiSTer menu reload is recommended.
+)SH";
+}
+
 static std::string lowerCopyExtra(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return value;
@@ -2129,10 +2213,16 @@ static bool extraStatusInstalled(const std::vector<std::string>& lines) {
     return statusValue(lines, "INSTALLED") == "YES";
 }
 
-static bool extraStatusFilesMissing(const std::vector<std::string>& lines) {
-    std::string installed = statusValue(lines, "INSTALLED");
-    std::string status = statusValue(lines, "STATUS");
-    return installed == "FILES MISSING" || status == "FILES MISSING";
+static bool extraStatusPartial(const std::vector<std::string>& lines) {
+    return statusValue(lines, "PARTIAL") == "YES";
+}
+
+static bool extraStatusZaparooFrontendFilesInstalled(const std::vector<std::string>& lines) {
+    return extraStatusInstalled(lines);
+}
+
+static bool extraStatusZaparooFrontendEnabled(const std::vector<std::string>& lines) {
+    return statusValue(lines, "FRONTEND ENABLED") == "YES";
 }
 
 std::vector<std::string> App::extraActions(ExtraId id) const {
@@ -2140,16 +2230,24 @@ std::vector<std::string> App::extraActions(ExtraId id) const {
         ? cachedExtraStatus[selectedExtra]
         : std::vector<std::string>{};
     const bool installed = extraStatusInstalled(statusLines);
-    const bool filesMissing = extraStatusFilesMissing(statusLines);
+    const bool partial = extraStatusPartial(statusLines);
     const bool updateAvailable = extraUpdateAvailable[static_cast<int>(id)];
 
     std::vector<std::string> actions;
     if (extraUpdateCheckPending && extraUpdateCheckIndex == static_cast<int>(id)) {
         return actions;
     }
+    if (id == ExtraId::ZaparooFrontend && extraStatusZaparooFrontendFilesInstalled(statusLines) && !extraStatusZaparooFrontendEnabled(statusLines)) {
+        actions.push_back("ENABLE FRONTEND");
+        actions.push_back("CHECK FOR UPDATES");
+        if (updateAvailable) actions.push_back("UPDATE");
+        actions.push_back("UNINSTALL");
+        return actions;
+    }
+
     if (!installed) {
         actions.push_back("INSTALL");
-        if (id == ExtraId::RetroAchievementCores && filesMissing) {
+        if (id == ExtraId::RetroAchievementCores && partial) {
             actions.push_back("CONFIGURE");
             actions.push_back("UNINSTALL");
         }
@@ -2167,18 +2265,23 @@ static std::string raSourcesHeredoc();
 
 std::vector<std::string> App::extraStatus(ExtraId id) {
     if (!ssh.isConnected()) {
-        if (id == ExtraId::ZaparooFrontend || id == ExtraId::Mms2GbCore) return {"INSTALLED: NO", "VERSION: UNKNOWN"};
-        return {"INSTALLED: NO"};
+        if (id == ExtraId::ZaparooFrontend) return {"INSTALLED: NO", "VERSION: UNKNOWN"};
+        if (id == ExtraId::Mms2GbCore) return {"INSTALLED: NO", "VERSION: UNKNOWN"};
+        return {"INSTALLED: NO", "PARTIAL: NO"};
     }
 
     if (id == ExtraId::ZaparooFrontend) {
         const std::string command =
-            "INSTALLED=NO; "
-            "if [ -f /media/fat/zaparoo/MiSTer_Zaparoo ] && [ -f /media/fat/zaparoo/frontend ] && [ -f /media/fat/zaparoo/menu_zaparoo.rbf ] && grep -q 'main=zaparoo/MiSTer_Zaparoo' /media/fat/MiSTer.ini 2>/dev/null; then INSTALLED=YES; fi; "
+            "FILES_INSTALLED=NO; FRONTEND_ENABLED=NO; INSTALLED=NO; "
+            "if [ -f /media/fat/zaparoo/MiSTer_Zaparoo ] && [ -f /media/fat/zaparoo/frontend ] && [ -f /media/fat/zaparoo/menu_zaparoo.rbf ]; then FILES_INSTALLED=YES; fi; "
+            "if grep -q 'main=zaparoo/MiSTer_Zaparoo' /media/fat/MiSTer.ini 2>/dev/null; then FRONTEND_ENABLED=YES; fi; "
+            "if [ \"$FILES_INSTALLED\" = YES ]; then INSTALLED=YES; fi; "
             "VERSION=$(cat /media/fat/Scripts/.config/zaparoo_frontend/version.txt 2>/dev/null); "
             "[ -z \"$VERSION\" ] && VERSION=$(cat /media/fat/Scripts/.config/zaparoo_launcher/version.txt 2>/dev/null); "
             "[ -z \"$VERSION\" ] && VERSION=UNKNOWN; "
-            "echo INSTALLED: $INSTALLED; echo VERSION: $VERSION";
+            "echo INSTALLED: $INSTALLED; echo FRONTEND ENABLED: $FRONTEND_ENABLED; "
+            "if [ \"$FILES_INSTALLED\" = YES ] && [ \"$FRONTEND_ENABLED\" != YES ]; then echo STATUS: INSTALLED BUT NOT ENABLED; fi; "
+            "echo VERSION: $VERSION";
         return splitLines(runCommandMessage(command));
     }
 
@@ -2224,13 +2327,18 @@ while IFS='|' read -r key title repo kind; do
 done < "$TMP/sources.txt"
 if [ "$FOUND" = "1" ] && [ "$MISSING" = "0" ]; then
     INSTALLED=YES
+    PARTIAL=NO
 elif [ "$FOUND" = "1" ] && [ "$MISSING" = "1" ]; then
-    INSTALLED="FILES MISSING"
+    INSTALLED=NO
+    PARTIAL=YES
 else
     INSTALLED=NO
+    PARTIAL=NO
 fi
 rm -rf "$TMP"
 echo INSTALLED: $INSTALLED
+echo PARTIAL: $PARTIAL
+if [ "$PARTIAL" = YES ]; then echo STATUS: FILES MISSING; fi
 )SH";
     return splitLines(runCommandMessage(command));
 }
@@ -2482,6 +2590,14 @@ void App::installOrUpdateZaparooFrontend() {
     const bool success = showStreamingCommandWindow("ZAPAROO FRONTEND", zaparooFrontendInstallShell(), "Zaparoo Frontend installed.", "Zaparoo Frontend install failed.");
     if (success) {
         extraUpdateAvailable[static_cast<int>(ExtraId::ZaparooFrontend)] = false;
+        sendSoftRebootCommand();
+    }
+    refreshCurrentExtraStatus(false);
+}
+
+void App::enableZaparooFrontend() {
+    const bool success = showStreamingCommandWindow("ENABLE ZAPAROO FRONTEND", zaparooFrontendEnableShell(), "Zaparoo Frontend enabled.", "Zaparoo Frontend enable failed.");
+    if (success) {
         sendSoftRebootCommand();
     }
     refreshCurrentExtraStatus(false);
@@ -2842,6 +2958,7 @@ void App::executeExtraAction(ExtraId id, int actionIndex) {
 
     if (id == ExtraId::ZaparooFrontend) {
         if (action == "INSTALL" || action == "UPDATE") installOrUpdateZaparooFrontend();
+        else if (action == "ENABLE FRONTEND") enableZaparooFrontend();
         else if (action == "CHECK FOR UPDATES") refreshCurrentExtraStatus(true);
         else if (action == "UNINSTALL") uninstallZaparooFrontend();
         return;
@@ -4572,6 +4689,7 @@ void App::configureUpdateAll() {
     SshResult manualsResult = ssh.runCommand("cat /media/fat/downloader_ajgowans_manualsdb.ini 2>/dev/null || true");
     SshResult jsonResult = ssh.runCommand("cat /media/fat/Scripts/.config/update_all/update_all.json 2>/dev/null || true");
     SshResult arcadeOrganizerResult = ssh.runCommand("cat /media/fat/Scripts/update_arcade-organizer.ini 2>/dev/null || true");
+    SshResult misterIniResult = ssh.runCommand("cat /media/fat/MiSTer.ini 2>/dev/null || true");
 
     std::string mainText = mainResult.output;
     std::string arcadeText = arcadeResult.output;
@@ -4579,6 +4697,7 @@ void App::configureUpdateAll() {
     std::string manualsText = manualsResult.output;
     std::string jsonText = jsonResult.output;
     std::string arcadeOrganizerText = arcadeOrganizerResult.output;
+    std::string misterIniText = misterIniResult.output;
     std::string combinedText = mainText + "\n" + arcadeText + "\n" + biosText;
 
     std::vector<ConfigToggle> toggles;
@@ -4738,6 +4857,8 @@ void App::configureUpdateAll() {
     addToggle("i2c2oled Add-on", sectionEnabledInText(combinedText, "i2c2oled_files"));
     addToggle("RetroSpy Utility", sectionEnabledInText(combinedText, "retrospy/retrospy-MiSTer"));
     addToggle("Anime0t4ku Scripts", sectionEnabledInText(combinedText, "anime0t4ku_mister_scripts"));
+    addToggle("Zaparoo", sectionEnabledInText(combinedText, "ZaparooProject/Zaparoo_MiSTer"));
+    addToggle("Enable Zaparoo Frontend", misterIniHasZaparooFrontendEntry(misterIniText), true);
 
     addCategory("Extra Content");
     addToggle("BIOS Database", sectionEnabledInText(combinedText, "bios_db"));
@@ -4983,7 +5104,7 @@ void App::configureUpdateAll() {
         "distribution_mister", "jtcores", "Coin-OpCollection/Distribution-MiSTerFPGA", "arcade_offset_folder", "llapi_folder",
         "theypsilon_unofficial_distribution", "MikeS11/YC_Builds-MiSTer", "agg23_db", "ajgowans/alt-cores", "TheJesusFish/Dual-Ram-Console-Cores",
         "MiSTerOrganize/MiSTer_Frontier", "mrext/all", "MiSTer_SAM_files", "tty2oled_files", "i2c2oled_files", "retrospy/retrospy-MiSTer",
-        "anime0t4ku_mister_scripts", "bios_db", "arcade_roms_db", "uberyoji_mister_boot_roms_mgl", "Dinierto/MiSTer-GBA-Borders",
+        "anime0t4ku_mister_scripts", "ZaparooProject/Zaparoo_MiSTer", "bios_db", "arcade_roms_db", "uberyoji_mister_boot_roms_mgl", "Dinierto/MiSTer-GBA-Borders",
         "funkycochise/Insert-Coin", "anime0t4ku_wallpapers", "pcn_challenge_wallpapers", "pcn_premium_wallpapers", "Ranny-Snice/Ranny-Snice-Wallpapers"
     };
     for (const std::string& section : mainKnownSections) mainLines = removeSectionFromLines(mainLines, section);
@@ -5016,6 +5137,8 @@ void App::configureUpdateAll() {
     bool i2c2oled = toggle(t++);
     bool retrospy = toggle(t++);
     bool animeScripts = toggle(t++);
+    bool zaparoo = toggle(t++);
+    bool zaparooFrontend = toggle(t++);
     bool bios = toggle(t++);
     bool arcadeRoms = toggle(t++);
     bool bootroms = toggle(t++);
@@ -5055,6 +5178,7 @@ void App::configureUpdateAll() {
     if (i2c2oled) appendSection(mainLines, {"[i2c2oled_files]", "db_url = https://raw.githubusercontent.com/venice1200/MiSTer_i2c2oled/main/i2c2oleddb.json"});
     if (retrospy) appendSection(mainLines, {"[retrospy/retrospy-MiSTer]", "db_url = https://raw.githubusercontent.com/retrospy/retrospy-MiSTer/db/db.json.zip"});
     if (animeScripts) appendSection(mainLines, {"[anime0t4ku_mister_scripts]", "db_url = https://raw.githubusercontent.com/Anime0t4ku/0t4ku-mister-scripts/db/db/scripts.json.zip"});
+    if (zaparoo) appendSection(mainLines, {"[ZaparooProject/Zaparoo_MiSTer]", "db_url = https://raw.githubusercontent.com/ZaparooProject/Zaparoo_MiSTer/db/db.json.zip"});
     if (bios) appendSection(biosLines, {"[bios_db]", "db_url = https://raw.githubusercontent.com/ajgowans/BiosDB_MiSTer/db/bios_db.json.zip"});
     if (arcadeRoms) appendSection(arcadeLines, {"[arcade_roms_db]", "db_url = https://raw.githubusercontent.com/zakk4223/ArcadeROMsDB_MiSTer/db/arcade_roms_db.json.zip"});
     if (bootroms) appendSection(mainLines, {"[uberyoji_mister_boot_roms_mgl]", "db_url = https://raw.githubusercontent.com/uberyoji/mister-boot-roms/main/db/uberyoji_mister_boot_roms_mgl.json"});
@@ -5096,6 +5220,16 @@ void App::configureUpdateAll() {
     command += "\n";
     command += writeTextCommand(jsonPath, newJson);
     command += "\n";
+
+    const bool existingZaparooFrontend = misterIniHasZaparooFrontendEntry(misterIniText);
+    if (zaparooFrontend) {
+        command += writeTextCommand("/media/fat/MiSTer.ini", patchMisterIniForZaparooFrontend(misterIniText));
+        command += "\n";
+    } else if (existingZaparooFrontend) {
+        command += writeTextCommand("/media/fat/MiSTer.ini", removeZaparooFrontendFromMisterIniText(misterIniText));
+        command += "\n";
+    }
+
     if (arcadeOrg) {
         command += writeTextCommand(arcadeOrganizerPath, "ARCADE_ORGANIZER=true\nSKIPALTS=false\n");
     } else {
