@@ -431,6 +431,16 @@ static std::string statusValue(const std::vector<std::string>& lines, const std:
     return "";
 }
 
+static std::string commandValue(const std::string& output, const std::string& key) {
+    const std::string prefix = key + "=";
+    for (const std::string& line : splitLines(output)) {
+        if (line.rfind(prefix, 0) == 0) {
+            return trim(line.substr(prefix.size()));
+        }
+    }
+    return "";
+}
+
 static bool statusYes(const std::vector<std::string>& lines, const std::string& key) {
     return statusValue(lines, key) == "YES";
 }
@@ -841,31 +851,34 @@ void App::drawRemote() {
     ui.drawCard(40, 176, 580, 400, "REMOTE STATUS");
     ui.drawCard(660, 176, 580, 400, "REMOTE ACTIONS");
 
-    ui.drawText(76, 246, "MISTER", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(260, 246, safeText(config.host), UiRenderer::rgb(248, 245, 255), 2);
+    ui.drawText(76, 226, "MISTER", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 226, safeText(config.host), UiRenderer::rgb(248, 245, 255), 2);
 
-    ui.drawText(76, 294, "DAEMON", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(260, 294, remoteInstalled, UiRenderer::rgb(248, 245, 255), 2);
+    ui.drawText(76, 274, "DAEMON", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 274, remoteInstalled, UiRenderer::rgb(248, 245, 255), 2);
 
-    ui.drawText(76, 342, "STATUS", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(260, 342, remoteRunning == "Yes" ? "RUNNING" : remoteRunning == "No" ? "STOPPED" : remoteRunning, remoteRunning == "Yes" ? UiRenderer::rgb(112, 232, 165) : UiRenderer::rgb(232, 130, 160), 2);
+    ui.drawText(76, 322, "INSTALLED VERSION", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 322, remoteInstalledVersion, UiRenderer::rgb(248, 245, 255), 2);
 
-    ui.drawText(76, 390, "START ON BOOT", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(260, 390, remoteStartup, UiRenderer::rgb(248, 245, 255), 2);
+    ui.drawText(76, 370, "GITHUB VERSION", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 370, remoteLatestVersion, UiRenderer::rgb(248, 245, 255), 2);
 
-    ui.drawText(76, 438, "PASSTHROUGH", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(260, 438, passthroughActive ? "ENABLED" : "DISABLED", passthroughActive ? UiRenderer::rgb(112, 232, 165) : UiRenderer::rgb(218, 208, 238), 2);
+    ui.drawText(76, 418, "STATUS", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 418, remoteRunning == "Yes" ? "RUNNING" : remoteRunning == "No" ? "STOPPED" : remoteRunning, remoteRunning == "Yes" ? UiRenderer::rgb(112, 232, 165) : UiRenderer::rgb(232, 130, 160), 2);
 
-    ui.drawText(76, 506, "PASSTHROUGH EXIT", UiRenderer::rgb(174, 154, 218), 2);
-    ui.drawText(76, 538, "PRESS SELECT + L TO EXIT", UiRenderer::rgb(248, 245, 255), 2);
+    ui.drawText(76, 466, "START ON BOOT", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 466, remoteStartup, UiRenderer::rgb(248, 245, 255), 2);
+
+    ui.drawText(76, 514, "PASSTHROUGH", UiRenderer::rgb(174, 154, 218), 2);
+    ui.drawText(300, 514, passthroughActive ? "ENABLED" : "DISABLED", passthroughActive ? UiRenderer::rgb(112, 232, 165) : UiRenderer::rgb(218, 208, 238), 2);
 
     const bool actionsEnabled = ssh.isConnected();
     const bool installed = remoteInstalled == "Yes";
     const bool running = remoteRunning == "Yes";
     const bool startup = remoteStartup == "Enabled";
 
-    if (!installed) {
-        ui.drawButton(696, 280, 508, 60, "INSTALL / UPDATE DAEMON", selected == 0 && actionsEnabled, false, !actionsEnabled);
+    if (!installed || remoteUpdateAvailable) {
+        ui.drawButton(696, 280, 508, 60, installed ? "UPDATE REMOTE DAEMON" : "INSTALL REMOTE DAEMON", selected == 0 && actionsEnabled, false, !actionsEnabled);
         ui.drawButton(696, 362, 508, 60, "REFRESH REMOTE STATUS", selected == 1 && actionsEnabled, false, !actionsEnabled);
         return;
     }
@@ -883,6 +896,7 @@ void App::drawRemote() {
     ui.drawButton(696, 402, 508, 60, "UNINSTALL REMOTE DAEMON", selected == 2 && actionsEnabled, true, !actionsEnabled);
     ui.drawButton(696, 484, 508, 60, "REFRESH REMOTE STATUS", selected == 3 && actionsEnabled, false, !actionsEnabled);
 }
+
 
 
 void App::drawScripts() {
@@ -3391,7 +3405,7 @@ void App::handleDeviceInput(u64 buttons) {
 void App::handleRemoteInput(u64 buttons) {
     const bool installed = remoteInstalled == "Yes";
     const bool running = remoteRunning == "Yes";
-    const int actionCount = installed ? 4 : 2;
+    const int actionCount = (!installed || remoteUpdateAvailable) ? 2 : 4;
 
     if (buttons & HidNpadButton_Up) selected = (selected + actionCount - 1) % actionCount;
     if (buttons & HidNpadButton_Down) selected = (selected + 1) % actionCount;
@@ -3402,7 +3416,7 @@ void App::handleRemoteInput(u64 buttons) {
         return;
     }
 
-    if (!installed) {
+    if (!installed || remoteUpdateAvailable) {
         switch (selected) {
             case 0: installRemoteDaemon(); break;
             case 1: refreshRemoteStatus(); break;
@@ -4232,16 +4246,45 @@ void App::refreshRemoteStatus() {
         return;
     }
 
-    const std::string command =
-        "if [ -x /media/fat/Scripts/companion_remote.sh ]; then "
-        "/media/fat/Scripts/companion_remote.sh status --unattended; "
-        "else "
-        "echo SCRIPT_INSTALLED=0; "
-        "echo DAEMON_INSTALLED=0; "
-        "echo DAEMON_RUNNING=0; "
-        "echo PORT_LISTENING=0; "
-        "echo START_ON_BOOT=0; "
-        "fi";
+    const std::string command = std::string(R"SH(
+remote_extract_version() {
+    file="$1"
+    line=$(grep '^SCRIPT_VERSION=' "$file" 2>/dev/null | head -n 1)
+    [ -z "$line" ] && line=$(grep '^COMPANION_REMOTE_VERSION=' "$file" 2>/dev/null | head -n 1)
+    [ -z "$line" ] && line=$(grep '^REMOTE_VERSION=' "$file" 2>/dev/null | head -n 1)
+    [ -z "$line" ] && line=$(grep '^VERSION=' "$file" 2>/dev/null | head -n 1)
+    [ -z "$line" ] && return
+    printf '%s' "$line" | cut -d= -f2- | sed "s/[\"']//g; s/[[:space:]]//g"
+}
+if [ -x /media/fat/Scripts/companion_remote.sh ]; then
+    /media/fat/Scripts/companion_remote.sh status --unattended
+    installed_version=$(remote_extract_version /media/fat/Scripts/companion_remote.sh)
+else
+    echo SCRIPT_INSTALLED=0
+    echo DAEMON_INSTALLED=0
+    echo DAEMON_RUNNING=0
+    echo PORT_LISTENING=0
+    echo START_ON_BOOT=0
+    installed_version=
+fi
+latest_version=
+tmp=/tmp/mc_companion_remote_latest_$$.sh
+if command -v wget >/dev/null 2>&1; then
+    if wget -q --no-check-certificate -O "$tmp" )SH") + shellQuote(RemoteScriptUrl) + std::string(R"SH( >/dev/null 2>&1; then
+        latest_version=$(remote_extract_version "$tmp")
+    fi
+fi
+rm -f "$tmp"
+[ -z "$installed_version" ] && installed_version=UNKNOWN
+[ -z "$latest_version" ] && latest_version=UNKNOWN
+echo REMOTE_INSTALLED_VERSION=$installed_version
+echo REMOTE_LATEST_VERSION=$latest_version
+if [ -x /media/fat/Scripts/companion_remote.sh ] && [ "$latest_version" != "UNKNOWN" ] && { [ "$installed_version" = "UNKNOWN" ] || [ "$installed_version" != "$latest_version" ]; }; then
+    echo REMOTE_UPDATE_AVAILABLE=1
+else
+    echo REMOTE_UPDATE_AVAILABLE=0
+fi
+)SH");
 
     SshResult result = ssh.runCommand(command);
     if (!result.success) {
@@ -4252,8 +4295,15 @@ void App::refreshRemoteStatus() {
     remoteInstalled = contains(result.output, "DAEMON_INSTALLED=1") || contains(result.output, "SCRIPT_INSTALLED=1") ? "Yes" : "No";
     remoteRunning = contains(result.output, "DAEMON_RUNNING=1") || contains(result.output, "PORT_LISTENING=1") ? "Yes" : "No";
     remoteStartup = contains(result.output, "START_ON_BOOT=1") ? "Enabled" : "Disabled";
-    lastMessage = "Remote status refreshed.";
+    remoteInstalledVersion = commandValue(result.output, "REMOTE_INSTALLED_VERSION");
+    remoteLatestVersion = commandValue(result.output, "REMOTE_LATEST_VERSION");
+    if (remoteInstalledVersion.empty()) remoteInstalledVersion = "Unknown";
+    if (remoteLatestVersion.empty()) remoteLatestVersion = "Unknown";
+    remoteUpdateAvailable = contains(result.output, "REMOTE_UPDATE_AVAILABLE=1");
+    if (remoteUpdateAvailable) lastMessage = "Companion Remote update available.";
+    else lastMessage = "Remote status refreshed.";
 }
+
 
 void App::installRemoteDaemon() {
     if (!ssh.isConnected()) {
@@ -4261,17 +4311,23 @@ void App::installRemoteDaemon() {
         return;
     }
 
+    std::string message;
+    if (remote.isConnected()) remote.releaseAll(message);
+    remote.disconnect();
+    passthroughActive = false;
+
     const std::string command =
         "mkdir -p /media/fat/Scripts && "
         "if ! command -v wget >/dev/null 2>&1; then echo wget not found.; exit 1; fi; "
-        "wget --no-check-certificate -O " + std::string(RemoteScriptPath) + " " + RemoteScriptUrl + " && "
-        "test -s " + std::string(RemoteScriptPath) + " && "
-        "chmod +x " + std::string(RemoteScriptPath) + " && " +
+        "wget --no-check-certificate -O " + shellQuote(RemoteScriptPath) + " " + shellQuote(RemoteScriptUrl) + " && "
+        "test -s " + shellQuote(RemoteScriptPath) + " && "
+        "chmod +x " + shellQuote(RemoteScriptPath) + " && " +
         remoteManageCommand("install");
 
     lastMessage = runCommandMessage(command);
     refreshRemoteStatus();
 }
+
 
 void App::startRemoteDaemon() {
     lastMessage = runCommandMessage(remoteManageCommand("start"));

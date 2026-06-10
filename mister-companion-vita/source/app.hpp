@@ -65,6 +65,9 @@ private:
     std::string remoteInstalled = "Not checked";
     std::string remoteRunning = "Not checked";
     std::string remoteStartup = "Not checked";
+    std::string remoteInstalledVersion = "Unknown";
+    std::string remoteLatestVersion = "Unknown";
+    bool remoteUpdateAvailable = false;
     bool passthroughActive = false;
     int selectedScript = 0;
     std::vector<std::vector<std::string>> cachedScriptStatus;
